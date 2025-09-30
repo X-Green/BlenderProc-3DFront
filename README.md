@@ -1,3 +1,9 @@
+# Changelog since 2025.09
+```
+- Change front_3d_object_sampling
+
+```
+
 # BlenderProc2 for 3D-Front
 Support BlenderProc2 with **multi-GPU batch rendering** and **3D visualization** for the 3D-Front dataset.
 
