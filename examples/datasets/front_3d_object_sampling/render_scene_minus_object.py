@@ -28,6 +28,7 @@ def get_folders(args):
 
 front_dir, future_dir, front_3D_texture_dir, output_dir = get_folders(args)
 front_json = front_dir.joinpath(args.front_json)
+front_json_id = front_json.stem
 
 if not future_dir.exists():
     raise Exception(f"Future folder does not exist: {future_dir}")
@@ -141,27 +142,21 @@ def find_optimal_camera_positions(target_object, num_cameras=8):
             ])
 
             camera_location, distance = cast_ray_for_camera_position(object_location, direction, target_object)
-
             toward_direction = object_location - camera_location
             toward_direction += np.random.uniform(-0.1, 0.1, size=3) * object_size
 
-            # Compute rotation matrix
-            try:
-                rotation_matrix = bproc.camera.rotation_from_forward_vec(toward_direction,
-                                                                         inplane_rot=np.random.uniform(-0.2, 0.2))
-                cam2world_matrix = bproc.math.build_transformation_mat(camera_location, rotation_matrix)
+            rotation_matrix = bproc.camera.rotation_from_forward_vec(toward_direction,
+                                                                        inplane_rot=0)
+            cam2world_matrix = bproc.math.build_transformation_mat(camera_location, rotation_matrix)
 
-                # Check if the target object is visible from this camera position
-                bvh_tree = bproc.object.create_bvh_tree_multi_objects(bproc.object.get_all_mesh_objects())
-                visible_objects = bproc.camera.visible_objects(cam2world_matrix, sqrt_number_of_rays=20)
+            # Check if the target object is visible from this camera position
+            bvh_tree = bproc.object.create_bvh_tree_multi_objects(bproc.object.get_all_mesh_objects())
+            visible_objects = bproc.camera.visible_objects(cam2world_matrix, sqrt_number_of_rays=20)
 
-                if target_object in visible_objects:
-                    camera_poses.append(cam2world_matrix)
-                    print(f"Added camera at distance {distance:.2f}m from object")
+            if target_object in visible_objects:
+                camera_poses.append(cam2world_matrix)
+                print(f"Added camera at distance {distance:.2f}m from object")
 
-            except Exception as e:
-                print(f"Failed to create camera pose: {e}")
-                continue
 
     return camera_poses
 
@@ -218,16 +213,13 @@ if target_objects:
             bproc.camera.add_camera_pose(pose)
 
         # ====================
-        import os
-        png_dir = os.path.join(args.output_dir, "rgb_png")
+        png_dir = os.path.join(args.output_dir, front_json_id, "rgb_png")
         os.makedirs(png_dir, exist_ok=True)
 
-        # Render the scene
+        # ==============================
         data = bproc.renderer.render(output_dir=png_dir)
 
-        # Write the data to a .hdf5 container
         # bproc.writer.write_hdf5(args.output_dir, data)
-        # Also RGB
 
         print(f"Rendering complete. Output saved to {args.output_dir}")
     else:
