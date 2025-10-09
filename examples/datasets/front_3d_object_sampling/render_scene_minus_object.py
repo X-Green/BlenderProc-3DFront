@@ -1,64 +1,118 @@
+
+#blenderproc run examples/datasets/front_3d_with_improved_mat/render_room_dataset_improved_mat.py /mnt/afs/liuyichen/data/_3D_FRONT/3D-FRONT/ /mnt/afs/liuyichen/data/_3D_FRONT/3D-FUTURE-model/ /mnt/afs/liuyichen/data/_3D_FRONT/3D-FRONT-texture/ /mnt/afs/liuyichen/data/_3D_FRONT/3D-FRONT/7f0b281d-ccbf-4d7c-91a0-103ff95f0a90.json ./resources/cctextures/ examples/datasets/front_3d_with_improved_mat/output
 import blenderproc as bproc
+
+import json
 import os
 import numpy as np
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("front", help="Path to the 3D front file")
+parser.add_argument("front_json", help="Path to the 3D front json file")
+parser.add_argument("front_folder", help="Path to the 3D front file")
 parser.add_argument("future_folder", help="Path to the 3D Future Model folder.")
 parser.add_argument("front_3D_texture_path", help="Path to the 3D FRONT texture folder.")
 parser.add_argument('output_dir', nargs='?', default="examples/datasets/front_3d_object_sampling/output",
                     help="Path to where the final files, will be saved")
 args = parser.parse_args()
 
-if not os.path.exists(args.front) or not os.path.exists(args.future_folder) or not os.path.exists(
+from pathlib import Path
+def get_folders(args):
+    front_dir = Path(args.front_folder)
+    future_dir = Path(args.future_folder)
+    front_3D_texture_dir = Path(args.front_3D_texture_path)
+    output_dir = Path(args.output_dir)
+    if not output_dir.exists():
+        output_dir.mkdir()
+    return front_dir, future_dir, front_3D_texture_dir, output_dir
+
+front_dir, future_dir, front_3D_texture_dir, output_dir = get_folders(args)
+front_json = front_dir.joinpath(args.front_json)
+
+if not future_dir.exists():
+    raise Exception(f"Future folder does not exist: {future_dir}")
+
+if not front_3D_texture_dir.exists():
+    raise Exception(f"Front 3D texture folder does not exist: {front_3D_texture_dir}")
+
+if not os.path.exists(args.front_json) or not os.path.exists(args.future_folder) or not os.path.exists(
         args.front_3D_texture_path):
     raise OSError("One of the three folders does not exist!")
 
 bproc.init()
-mapping_file = bproc.utility.resolve_resource(os.path.join("front_3D", "3D_front_mapping.csv"))
+# mapping_file = bproc.utility.resolve_resource(os.path.join("front_3D", "3D_front_mapping.csv"))
+mapping_file = bproc.utility.resolve_resource(os.path.join("front_3D", "blender_label_mapping.csv"))
 mapping = bproc.utility.LabelIdMapping.from_csv(mapping_file)
 
 # set the light bounces
 bproc.renderer.set_light_bounces(diffuse_bounces=50, glossy_bounces=50, max_bounces=50,
                                  transmission_bounces=50, transparent_max_bounces=50)
 
+# read 3d future model info
+with open(future_dir.joinpath('model_info_revised.json'), 'r') as f:
+    model_info_data = json.load(f)
+model_id_to_label = {m["model_id"]: m["category"].lower().replace(" / ", "/") if m["category"] else 'others' for
+                        m in
+                        model_info_data}
+
 # load the front 3D objects
 room_objs = bproc.loader.load_front3d(
-    json_path=args.front,
+    json_path=args.front_json,
     future_model_path=args.future_folder,
     front_3D_texture_path=args.front_3D_texture_path,
-    label_mapping=mapping
+    label_mapping=mapping,
+    model_id_to_label=model_id_to_label
 )
 
 # define the camera intrinsics
 bproc.camera.set_resolution(512, 512)
 
 
-def cast_ray_for_camera_position(object_location, direction, max_distance=20.0, min_distance=2.0):
+def cast_ray_for_camera_position(object_location, direction, target_object, max_distance=20.0, min_distance=0.1):
     """
     Cast a ray from the object location in a given direction to find optimal camera position.
     Returns the position where the ray hits something or reaches max_distance.
+    If the ray hits the target object itself, continue ray casting from the hit point.
     """
     ray_start = object_location
-    ray_end = object_location + direction * max_distance
-    all_mesh_objects = bproc.object.get_all_mesh_objects()
+    total_distance_traveled = 0.0
+    max_iterations = 10  # Prevent infinite loops
+    iteration = 0
+    
+    while iteration < max_iterations and total_distance_traveled < max_distance:
+        remaining_distance = max_distance - total_distance_traveled
+        ray_direction = direction * remaining_distance
+        
+        # Perform ray casting to find intersection
+        result = bproc.object.scene_ray_cast(ray_start, ray_direction, float(remaining_distance))
+        hit, hit_location, hit_normal, index, hit_object, matrix = result
 
-    # Perform ray casting to find intersection
-    hit_location, hit_object, hit_normal = bproc.object.scene_ray_cast(ray_start, direction * max_distance,
-                                                                       max_distance)
+        print(f"Ray casting iteration {iteration + 1}: hit={hit}, hit_location={hit_location}, hit_object={hit_object.get_name() if hit_object else 'None'}")
 
-    if hit_location is not None:
-        # Ray hit something, position camera slightly before the hit point
-        hit_distance = np.linalg.norm(hit_location - object_location)
-        if hit_distance > min_distance:
-            # avoid being too close to walls
-            camera_distance = max(min_distance, hit_distance * 0.9)
-            camera_location = object_location + direction * camera_distance
-            return camera_location, hit_distance
-    # else
-    # Ray didn't hit anything or hit too close, use max distance
-    camera_location = ray_end
+        if hit_location is not None:
+            hit_distance = np.linalg.norm(hit_location - ray_start)
+            total_distance_traveled += hit_distance
+            
+            # Check if we hit the target object itself
+            if hit_object == target_object:
+                print(f"Hit target object itself, continuing ray from hit point...")
+                # Continue ray from hit point with small offset to avoid self-intersection
+                ray_start = hit_location + direction * 0.01  # Small offset in the direction
+                iteration += 1
+                continue
+            else:
+                # Hit something else (wall, other object), position camera before hit point
+                if total_distance_traveled > min_distance:
+                    # avoid being too close to walls
+                    camera_distance = max(min_distance, total_distance_traveled * 0.9)
+                    camera_location = object_location + direction * camera_distance
+                    return camera_location, total_distance_traveled
+        
+        # Ray didn't hit anything or we've exhausted our iterations
+        break
+    
+    # Ray didn't hit anything valid or reached max distance
+    camera_location = object_location + direction * max_distance
     return camera_location, max_distance
 
 
@@ -86,7 +140,7 @@ def find_optimal_camera_positions(target_object, num_cameras=8):
                 np.sin(elevation_rad)
             ])
 
-            camera_location, distance = cast_ray_for_camera_position(object_location, direction)
+            camera_location, distance = cast_ray_for_camera_position(object_location, direction, target_object)
 
             toward_direction = object_location - camera_location
             toward_direction += np.random.uniform(-0.1, 0.1, size=3) * object_size
@@ -124,7 +178,8 @@ for obj in room_objs:
 if not target_objects:
     print("No suitable target objects found in the scene!")
     # target_objects = room_objs[:5]  # Fallback to first 5 objects
-    target_objects = np.random.choice(room_objs, min(5, len(room_objs)), replace=False).tolist()
+    import random
+    target_objects = random.sample(room_objs, min(5, len(room_objs)))
 
 if target_objects:
     # For now, select the first suitable object, but you could implement other selection criteria
@@ -162,24 +217,17 @@ if target_objects:
         for pose in camera_poses:
             bproc.camera.add_camera_pose(pose)
 
-        # Render the scene
-        data = bproc.renderer.render()
-
-        # Write the data to a .hdf5 container
-        bproc.writer.write_hdf5(args.output_dir, data)
-        # Also RGB
+        # ====================
         import os
-        try:
-            import imageio.v2 as imageio
-        except ImportError:
-            import imageio
-
         png_dir = os.path.join(args.output_dir, "rgb_png")
         os.makedirs(png_dir, exist_ok=True)
-        for i, col in enumerate(data.get("colors", [])):
-            img = (np.clip(col, 0.0, 1.0) * 255).astype(np.uint8)
-            imageio.imwrite(os.path.join(png_dir, f"{i:04d}.png"), img)
-        # Saving done
+
+        # Render the scene
+        data = bproc.renderer.render(output_dir=png_dir)
+
+        # Write the data to a .hdf5 container
+        # bproc.writer.write_hdf5(args.output_dir, data)
+        # Also RGB
 
         print(f"Rendering complete. Output saved to {args.output_dir}")
     else:
