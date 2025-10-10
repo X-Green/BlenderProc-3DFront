@@ -40,7 +40,10 @@ if not os.path.exists(args.front_json) or not os.path.exists(args.future_folder)
         args.front_3D_texture_path):
     raise OSError("One of the three folders does not exist!")
 
-bproc.init()
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+bproc.init(compute_device='cuda:0', compute_device_type="CUDA")
+# bproc.init()
+
 # mapping_file = bproc.utility.resolve_resource(os.path.join("front_3D", "3D_front_mapping.csv"))
 mapping_file = bproc.utility.resolve_resource(os.path.join("front_3D", "blender_label_mapping.csv"))
 mapping = bproc.utility.LabelIdMapping.from_csv(mapping_file)
@@ -90,16 +93,14 @@ for obj in bproc.object.get_all_mesh_objects():
         
         principled_bsdf.inputs["Roughness"].default_value = 0.8
 
-
-# define the camera intrinsics
-bproc.camera.set_resolution(512, 512)
+# =========================================================
 
 
-def cast_ray_for_camera_position(object_location, direction, target_object, max_distance=20.0, min_distance=0.1):
+def cast_ray_for_camera_position(object_location, direction, target_object, max_distance=20.0, min_distance=0.5):
     """
     Cast a ray from the object location in a given direction to find optimal camera position.
     Returns the position where the ray hits something or reaches max_distance.
-    If the ray hits the target object itself, continue ray casting from the hit point.
+    Exclude the target obj itself
     """
     ray_start = object_location
     total_distance_traveled = 0.0
@@ -211,7 +212,9 @@ if target_objects:
     camera_poses = find_optimal_camera_positions(chosen_object, num_cameras=16)
 
     import random
-    camera_poses = random.sample(camera_poses, 4)
+    camera_poses = random.sample(camera_poses, 6)
+
+    bproc.camera.set_resolution(512, 512)
 
     if camera_poses:
         # ====================DEBUG INFO=====================
@@ -244,23 +247,17 @@ if target_objects:
         png_dir = os.path.join(args.output_dir, front_json_id, "rgb_png")
         os.makedirs(png_dir, exist_ok=True)
 
+        hdf5_dir = os.path.join(args.output_dir, front_json_id, "hdf5")
+        os.makedirs(hdf5_dir, exist_ok=True)
+
         # ==============================
         bproc.renderer.set_cpu_threads(56)
-        # bproc.renderer.set_render_devices(use_only_cpu=False, desired_gpu_device_type="CUDA")
         bproc.renderer.set_output_format(file_format="PNG", color_depth=8)
         data = bproc.renderer.render()
-        # data = bproc.renderer.render(output_dir=png_dir)
 
-        from PIL import Image
-        for i in range(len(data['colors'])):
-            rgb_image = (data['colors'][i] * 255).astype(np.uint8)
-            Image.fromarray(rgb_image).save(os.path.join(args.output_dir, front_json_id, "rgb_png", f"{i:06d}.png"))
+        bproc.writer.write_hdf5(hdf5_dir, data)
 
-
-        bproc.writer.write_hdf5(args.output_dir, data)
-
-
-        print(f"Rendering complete. Output saved to {args.output_dir}")
+        print(f"Rendering complete. Output saved to {hdf5_dir}")
     else:
         print("No valid camera poses found!")
 else:
