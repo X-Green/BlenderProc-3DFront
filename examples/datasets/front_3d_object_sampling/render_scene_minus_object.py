@@ -65,6 +65,32 @@ room_objs = bproc.loader.load_front3d(
     model_id_to_label=model_id_to_label
 )
 
+# ==================Wall material improvement==================
+for obj in bproc.object.get_all_mesh_objects():
+    obj_name = obj.get_name().lower()
+    if "wall" in obj_name:
+        materials = obj.get_materials()
+        if not materials:
+            mat = obj.new_material(name=f"{obj_name}_material")
+        else:
+            mat = materials[0]
+        
+        # Add subtle texture variation using noise
+        principled_bsdf = mat.get_the_one_node_with_type("BsdfPrincipled")
+        noise_texture = mat.new_node("ShaderNodeTexNoise")
+        noise_texture.inputs["Scale"].default_value = 5.0
+        noise_texture.inputs["Detail"].default_value = 2.0
+        
+        color_ramp = mat.new_node("ShaderNodeValToRGB")
+        color_ramp.color_ramp.elements[0].color = [0.88, 0.88, 0.88, 1.0]
+        color_ramp.color_ramp.elements[1].color = [0.95, 0.95, 0.95, 1.0]
+        
+        mat.link(noise_texture.outputs["Fac"], color_ramp.inputs["Fac"])
+        mat.link(color_ramp.outputs["Color"], principled_bsdf.inputs["Base Color"])
+        
+        principled_bsdf.inputs["Roughness"].default_value = 0.8
+
+
 # define the camera intrinsics
 bproc.camera.set_resolution(512, 512)
 
@@ -77,7 +103,7 @@ def cast_ray_for_camera_position(object_location, direction, target_object, max_
     """
     ray_start = object_location
     total_distance_traveled = 0.0
-    max_iterations = 10  # Prevent infinite loops
+    max_iterations = 10
     iteration = 0
     
     while iteration < max_iterations and total_distance_traveled < max_distance:
@@ -98,11 +124,10 @@ def cast_ray_for_camera_position(object_location, direction, target_object, max_
             if hit_object == target_object:
                 print(f"Hit target object itself, continuing ray from hit point...")
                 # Continue ray from hit point with small offset to avoid self-intersection
-                ray_start = hit_location + direction * 0.01  # Small offset in the direction
+                ray_start = hit_location + direction * 0.05  # Small offset in the direction
                 iteration += 1
                 continue
             else:
-                # Hit something else (wall, other object), position camera before hit point
                 if total_distance_traveled > min_distance:
                     # avoid being too close to walls
                     camera_distance = max(min_distance, total_distance_traveled * 0.9)
@@ -117,7 +142,7 @@ def cast_ray_for_camera_position(object_location, direction, target_object, max_
     return camera_location, max_distance
 
 
-def find_optimal_camera_positions(target_object, num_cameras=8):
+def find_optimal_camera_positions(target_object, num_cameras=16):
     """
     Find optimal camera positions around a target object using ray casting.
     """
@@ -128,7 +153,8 @@ def find_optimal_camera_positions(target_object, num_cameras=8):
 
     # Generate multiple directions around the object
     # Use spherical coordinates to generate evenly distributed directions
-    elevations = np.linspace(10, 60, 4)  # 4 different elevation angles (in degrees)
+    # elevations = np.linspace(10, 170, 4)
+    elevations = [30, 120]
     azimuths = np.linspace(0, 2 * np.pi, num_cameras // len(elevations), endpoint=False)  # Azimuth angles
 
     for elevation in elevations:
@@ -182,8 +208,10 @@ if target_objects:
     print(f"Selected target object: {chosen_object.get_name()}")
 
     # Find optimal camera positions using ray casting
-    camera_poses = find_optimal_camera_positions(chosen_object, num_cameras=8)
+    camera_poses = find_optimal_camera_positions(chosen_object, num_cameras=16)
 
+    import random
+    camera_poses = random.sample(camera_poses, 4)
 
     if camera_poses:
         # ====================DEBUG INFO=====================
@@ -217,9 +245,20 @@ if target_objects:
         os.makedirs(png_dir, exist_ok=True)
 
         # ==============================
-        data = bproc.renderer.render(output_dir=png_dir)
+        bproc.renderer.set_cpu_threads(56)
+        # bproc.renderer.set_render_devices(use_only_cpu=False, desired_gpu_device_type="CUDA")
+        bproc.renderer.set_output_format(file_format="PNG", color_depth=8)
+        data = bproc.renderer.render()
+        # data = bproc.renderer.render(output_dir=png_dir)
 
-        # bproc.writer.write_hdf5(args.output_dir, data)
+        from PIL import Image
+        for i in range(len(data['colors'])):
+            rgb_image = (data['colors'][i] * 255).astype(np.uint8)
+            Image.fromarray(rgb_image).save(os.path.join(args.output_dir, front_json_id, "rgb_png", f"{i:06d}.png"))
+
+
+        bproc.writer.write_hdf5(args.output_dir, data)
+
 
         print(f"Rendering complete. Output saved to {args.output_dir}")
     else:
