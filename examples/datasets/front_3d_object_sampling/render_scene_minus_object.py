@@ -68,32 +68,33 @@ room_objs = bproc.loader.load_front3d(
     model_id_to_label=model_id_to_label
 )
 
-# ==================Wall material improvement==================
-for obj in bproc.object.get_all_mesh_objects():
-    obj_name = obj.get_name().lower()
-    if "wall" in obj_name:
-        materials = obj.get_materials()
-        if not materials:
-            mat = obj.new_material(name=f"{obj_name}_material")
-        else:
-            mat = materials[0]
+# # ==================Wall material improvement==================
+# for obj in bproc.object.get_all_mesh_objects():
+#     obj_name = obj.get_name().lower()
+#     if "wall" in obj_name:
+#         print(f"[Debug] ############### Improving material for wall object: {obj_name} ################")
+#         materials = obj.get_materials()
+#         if not materials:
+#             mat = obj.new_material(name=f"{obj_name}_material")
+#         else:
+#             mat = materials[0]
         
-        # Add subtle texture variation using noise
-        principled_bsdf = mat.get_the_one_node_with_type("BsdfPrincipled")
-        noise_texture = mat.new_node("ShaderNodeTexNoise")
-        noise_texture.inputs["Scale"].default_value = 5.0
-        noise_texture.inputs["Detail"].default_value = 2.0
+#         # Add subtle texture variation using noise
+#         principled_bsdf = mat.get_the_one_node_with_type("BsdfPrincipled")
+#         noise_texture = mat.new_node("ShaderNodeTexNoise")
+#         noise_texture.inputs["Scale"].default_value = 5.0
+#         noise_texture.inputs["Detail"].default_value = 2.0
         
-        color_ramp = mat.new_node("ShaderNodeValToRGB")
-        color_ramp.color_ramp.elements[0].color = [0.88, 0.88, 0.88, 1.0]
-        color_ramp.color_ramp.elements[1].color = [0.95, 0.95, 0.95, 1.0]
+#         color_ramp = mat.new_node("ShaderNodeValToRGB")
+#         color_ramp.color_ramp.elements[0].color = [0.88, 0.88, 0.88, 1.0]
+#         color_ramp.color_ramp.elements[1].color = [0.95, 0.95, 0.95, 1.0]
         
-        mat.link(noise_texture.outputs["Fac"], color_ramp.inputs["Fac"])
-        mat.link(color_ramp.outputs["Color"], principled_bsdf.inputs["Base Color"])
+#         mat.link(noise_texture.outputs["Fac"], color_ramp.inputs["Fac"])
+#         mat.link(color_ramp.outputs["Color"], principled_bsdf.inputs["Base Color"])
         
-        principled_bsdf.inputs["Roughness"].default_value = 0.8
+#         principled_bsdf.inputs["Roughness"].default_value = 0.8
 
-# =========================================================
+# # =========================================================
 
 
 def cast_ray_for_camera_position(object_location, direction, target_object, max_distance=20.0, min_distance=0.5):
@@ -148,27 +149,32 @@ def find_optimal_camera_positions(target_object, num_cameras=16):
     Find optimal camera positions around a target object using ray casting.
     """
     object_location = np.mean(target_object.get_bound_box(), axis=0)
-    object_size = np.max(np.max(target_object.get_bound_box(), axis=0) - np.min(target_object.get_bound_box(), axis=0))
+    object_size = np.mean(np.max(target_object.get_bound_box(), axis=0) - np.min(target_object.get_bound_box(), axis=0))
+    cam_fov = 40 #default?
+    blocking_max_ratio = 0.7 # Max ratio of target object blocking allowed in one axis
+    min_distance = object_size / (blocking_max_ratio * 2.8) / (np.tan(np.radians(cam_fov) / 2))
+    print(f"[Debug] Object size: {object_size:.3f}, Min camera distance: {min_distance:.3f}")
 
     camera_poses = []
 
     # Generate multiple directions around the object
     # Use spherical coordinates to generate evenly distributed directions
     # elevations = np.linspace(10, 170, 4)
-    elevations = [30, 120]
-    azimuths = np.linspace(0, 2 * np.pi, num_cameras // len(elevations), endpoint=False)  # Azimuth angles
+    elevations = [-45, -30, 30, 75]
+    azimuths = [0, 45, 90, 135, 180, 225, 270, 315]
 
     for elevation in elevations:
         for azimuth in azimuths:
             # Convert spherical to cartesian coordinates
             elevation_rad = np.radians(elevation)
+            azimuth_rad = np.radians(azimuth)
             direction = np.array([
-                np.cos(elevation_rad) * np.cos(azimuth),
-                np.cos(elevation_rad) * np.sin(azimuth),
+                np.cos(elevation_rad) * np.cos(azimuth_rad),
+                np.cos(elevation_rad) * np.sin(azimuth_rad),
                 np.sin(elevation_rad)
             ])
 
-            camera_location, distance = cast_ray_for_camera_position(object_location, direction, target_object)
+            camera_location, distance = cast_ray_for_camera_position(object_location, direction, target_object, min_distance=min_distance)
             toward_direction = object_location - camera_location
             toward_direction += np.random.uniform(-0.1, 0.1, size=3) * object_size
 
@@ -203,62 +209,107 @@ if not target_objects:
     import random
     target_objects = random.sample(room_objs, min(5, len(room_objs)))
 
-if target_objects:
-    # For now, select the first suitable object, but you could implement other selection criteria
-    chosen_object = target_objects[0]
-    print(f"Selected target object: {chosen_object.get_name()}")
-
-    # Find optimal camera positions using ray casting
-    camera_poses = find_optimal_camera_positions(chosen_object, num_cameras=16)
-
-    import random
-    camera_poses = random.sample(camera_poses, 6)
-
-    bproc.camera.set_resolution(512, 512)
-
-    if camera_poses:
-        # ====================DEBUG INFO=====================
-        print(f"Found {len(camera_poses)} valid camera poses")
-        obj_center = np.mean(chosen_object.get_bound_box(), axis=0)
-        sep = "=" * 60
-        print(f"\n{sep}")
-        print("CAMERA POSES DEBUG INFORMATION")
-        print(sep)
-        print(f"Target object: {chosen_object.get_name()}")
-        print(f"Number of camera poses found: {len(camera_poses)}")
-        print(sep)
-        for i, pose in enumerate(camera_poses, 1):
-            loc = pose[:3, 3]
-            dist = np.linalg.norm(loc - obj_center)
-            print(f"Camera {i:02d}:")
-            print(f"  Location : [{loc[0]:8.3f}, {loc[1]:8.3f}, {loc[2]:8.3f}]  | Distance: {dist:6.3f} m")
-            print("  Matrix:")
-            for r in range(4):
-                print("    [" + ", ".join(f"{pose[r, c]:8.3f}" for c in range(4)) + "]")
-            print()
-        print(f"{sep}\n")
-        #===============================================
-
-        # Add all camera poses
-        for pose in camera_poses:
-            bproc.camera.add_camera_pose(pose)
-
-        # ====================
-        png_dir = os.path.join(args.output_dir, front_json_id, "rgb_png")
-        os.makedirs(png_dir, exist_ok=True)
-
-        hdf5_dir = os.path.join(args.output_dir, front_json_id, "hdf5")
-        os.makedirs(hdf5_dir, exist_ok=True)
-
-        # ==============================
-        bproc.renderer.set_cpu_threads(56)
-        bproc.renderer.set_output_format(file_format="PNG", color_depth=8)
-        data = bproc.renderer.render()
-
-        bproc.writer.write_hdf5(hdf5_dir, data)
-
-        print(f"Rendering complete. Output saved to {hdf5_dir}")
-    else:
-        print("No valid camera poses found!")
-else:
+if not target_objects:
     print("No objects found in the scene!")
+    exit(1)
+
+
+# For now, select the first suitable object, but you could implement other selection criteria
+chosen_object = target_objects[0]
+print(f"Selected target object: {chosen_object.get_name()}")
+
+# Find optimal camera positions using ray casting
+camera_poses = find_optimal_camera_positions(chosen_object, num_cameras=16)
+
+if not camera_poses:
+    print("No valid camera poses found!")
+    exit(1)
+
+import random
+camera_poses = random.sample(camera_poses, min(3, len(camera_poses)))
+
+# ====================DEBUG INFO=====================
+print(f"Found {len(camera_poses)} valid camera poses")
+obj_center = np.mean(chosen_object.get_bound_box(), axis=0)
+
+sep = "=" * 60
+print(f"\n{sep}")
+print("CAMERA POSES DEBUG INFORMATION")
+print(sep)
+print(f"Target object: {chosen_object.get_name()}")
+print(f"Number of camera poses found: {len(camera_poses)}")
+print(sep)
+for i, pose in enumerate(camera_poses, 1):
+    loc = pose[:3, 3]
+    dist = np.linalg.norm(loc - obj_center)
+    print(f"Camera {i:02d}:")
+    print(f"  Location : [{loc[0]:8.3f}, {loc[1]:8.3f}, {loc[2]:8.3f}]  | Distance: {dist:6.3f} m")
+    print("  Matrix:")
+    for r in range(4):
+        print("    [" + ", ".join(f"{pose[r, c]:8.3f}" for c in range(4)) + "]")
+    print()
+print(f"{sep}\n")
+#===============================================
+
+bproc.camera.set_intrinsics_from_blender_params(
+    lens=80, lens_unit='FOV',
+    image_width=240, image_height=180,
+)
+
+for pose in camera_poses:
+    bproc.camera.add_camera_pose(pose)
+
+# ====================
+png_dir = os.path.join(args.output_dir, front_json_id, "rgb_png")
+os.makedirs(png_dir, exist_ok=True)
+
+hdf5_dir = os.path.join(args.output_dir, front_json_id, "hdf5")
+os.makedirs(hdf5_dir, exist_ok=True)
+
+png_dir_without = os.path.join(args.output_dir, front_json_id, "rgb_png_without_object")
+os.makedirs(png_dir_without, exist_ok=True)
+
+hdf5_dir_without = os.path.join(args.output_dir, front_json_id, "hdf5_without_object")
+os.makedirs(hdf5_dir_without, exist_ok=True)
+
+# ==============================
+bproc.renderer.set_cpu_threads(56)
+bproc.renderer.set_output_format(file_format="PNG", color_depth=8)
+data = bproc.renderer.render()
+
+bproc.writer.write_hdf5(hdf5_dir, data)
+
+print(f"Rendering With-Object Dataset complete. Output saved to {hdf5_dir}")
+
+# Now render the same scene with the same cameras, but remove the target object
+print(f"\nRemoving target object: {chosen_object.get_name()}")
+chosen_object.hide()
+
+os.makedirs(hdf5_dir_without, exist_ok=True)
+
+data_without = bproc.renderer.render()
+
+bproc.writer.write_hdf5(hdf5_dir_without, data_without)
+
+print(f"Rendering Without-Object Dataset complete. Output saved to {hdf5_dir_without}")
+
+def convert_hdf5_png(input_dir, output_dir):
+    import h5py
+    import glob
+    import imageio
+    all_hdf5_files = glob.glob(os.path.join(input_dir, "*.hdf5"))
+    os.makedirs(output_dir, exist_ok=True)
+    for hdf5_file in all_hdf5_files:
+        with h5py.File(hdf5_file, 'r') as f:
+            for key in f.keys():
+                if key == "colors":
+                    # convert the colors to numpy array and save it as png
+                    colors = f[key][:]
+                    colors = colors.astype(np.uint8)
+                    colors = colors.reshape(colors.shape[0], colors.shape[1], 3)
+                    colors = colors.reshape(colors.shape[0], colors.shape[1], 3)
+                    # save the colors by imageio
+                    imageio.imwrite(os.path.join(output_dir, os.path.basename(hdf5_file).replace(".hdf5", ".png")), colors)
+                    
+convert_hdf5_png(hdf5_dir, png_dir)
+convert_hdf5_png(hdf5_dir_without, png_dir_without)
